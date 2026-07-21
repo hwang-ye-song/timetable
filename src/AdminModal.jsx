@@ -6,22 +6,45 @@ export default function AdminModal({ onClose }) {
   const [stats, setStats] = useState({ totalVisits: 0, todayVisits: 0, yesterdayVisits: 0, totalUsers: 0 });
   const [chartData, setChartData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState('specific'); // 'specific', 'week', 'all'
+  const [period, setPeriod] = useState('specific'); // 'specific', 'week', 'month', 'all'
+  const [showVisitors, setShowVisitors] = useState(true);
+  const [showUsers, setShowUsers] = useState(true);
   
-  const getTodayString = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // 한국 시간(KST) 기준 날짜/시간 정보를 반환하는 헬퍼 함수
+  const getKstComponents = (dateVal) => {
+    const d = dateVal ? new Date(dateVal) : new Date();
+    // d.getTime()은 절대 UTC 시간(ms)
+    // 여기에 9시간을 더한 뒤 UTC 메서드를 사용하면 KST 값을 얻을 수 있음
+    const kstMs = d.getTime() + (9 * 60 * 60 * 1000);
+    const kst = new Date(kstMs);
+    return {
+      year: kst.getUTCFullYear(),
+      month: kst.getUTCMonth(),
+      date: kst.getUTCDate(),
+      hours: kst.getUTCHours(),
+    };
   };
+
+  // KST 자정을 나타내는 정확한 UTC Date 객체 반환
+  const getKstMidnightUTC = (dateVal) => {
+    const kst = getKstComponents(dateVal);
+    // KST 자정은 UTC 기준으로 전날 15시임 (-9시간)
+    return new Date(Date.UTC(kst.year, kst.month, kst.date, -9, 0, 0, 0));
+  };
+
+  const getTodayString = () => {
+    const kst = getKstComponents();
+    return `${kst.year}-${String(kst.month + 1).padStart(2, '0')}-${String(kst.date).padStart(2, '0')}`;
+  };
+
   const [selectedDate, setSelectedDate] = useState(getTodayString());
 
   useEffect(() => {
     const fetchStats = async () => {
       setLoading(true);
       try {
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
+        const today = getKstMidnightUTC();
+        const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
 
         // 1. 상단 고정 통계 (항상 전체 데이터 기준으로 계산)
         const [
@@ -45,18 +68,20 @@ export default function AdminModal({ onClose }) {
         let uQuery = supabase.from('app_users').select('created_at').not('created_at', 'is', null);
 
         if (period === 'specific') {
-          const targetDay = new Date(selectedDate);
-          targetDay.setHours(0, 0, 0, 0);
-          const nextDay = new Date(targetDay);
-          nextDay.setDate(nextDay.getDate() + 1);
+          const [y, m, d] = selectedDate.split('-').map(Number);
+          const targetDay = new Date(Date.UTC(y, m - 1, d, -9, 0, 0, 0));
+          const nextDay = new Date(targetDay.getTime() + 24 * 60 * 60 * 1000);
 
           vQuery = vQuery.gte('visited_at', targetDay.toISOString()).lt('visited_at', nextDay.toISOString());
           uQuery = uQuery.gte('created_at', targetDay.toISOString()).lt('created_at', nextDay.toISOString());
         } else if (period === 'week') {
-          const weekAgo = new Date(today);
-          weekAgo.setDate(weekAgo.getDate() - 6);
+          const weekAgo = new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000);
           vQuery = vQuery.gte('visited_at', weekAgo.toISOString());
           uQuery = uQuery.gte('created_at', weekAgo.toISOString());
+        } else if (period === 'month') {
+          const monthAgo = new Date(today.getTime() - 29 * 24 * 60 * 60 * 1000);
+          vQuery = vQuery.gte('visited_at', monthAgo.toISOString());
+          uQuery = uQuery.gte('created_at', monthAgo.toISOString());
         }
 
         // 실패해도 다른 그래프는 그리도록 allSettled 사용
@@ -71,8 +96,8 @@ export default function AdminModal({ onClose }) {
         if (period === 'all') {
           const allMap = new Map();
           const processRow = (row, type, timeColumn) => {
-            const d = new Date(row[timeColumn]);
-            const sortKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+            const kst = getKstComponents(row[timeColumn]);
+            const sortKey = `${kst.year}-${String(kst.month+1).padStart(2,'0')}-${String(kst.date).padStart(2,'0')}`;
             if (!allMap.has(sortKey)) allMap.set(sortKey, { sortKey, 방문자: 0, 가입자: 0 });
             allMap.get(sortKey)[type]++;
           };
@@ -95,18 +120,25 @@ export default function AdminModal({ onClose }) {
             }
           } else if (period === 'week') {
             for(let i=6; i>=0; i--) {
-              const d = new Date(today);
-              d.setDate(d.getDate() - i);
-              const key = `${d.getMonth() + 1}/${d.getDate()}`;
+              const d = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+              const kst = getKstComponents(d);
+              const key = `${kst.month + 1}/${kst.date}`;
+              map.set(key, { name: key, 방문자: 0, 가입자: 0 });
+            }
+          } else if (period === 'month') {
+            for(let i=29; i>=0; i--) {
+              const d = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+              const kst = getKstComponents(d);
+              const key = `${kst.month + 1}/${kst.date}`;
               map.set(key, { name: key, 방문자: 0, 가입자: 0 });
             }
           }
 
           const formatKey = (isoString) => {
             if (!isoString) return '';
-            const d = new Date(isoString);
-            if (period === 'specific') return `${String(d.getHours()).padStart(2, '0')}시`;
-            if (period === 'week') return `${d.getMonth() + 1}/${d.getDate()}`;
+            const kst = getKstComponents(isoString);
+            if (period === 'specific') return `${String(kst.hours).padStart(2, '0')}시`;
+            if (period === 'week' || period === 'month') return `${kst.month + 1}/${kst.date}`;
             return '';
           };
 
@@ -169,6 +201,18 @@ export default function AdminModal({ onClose }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
             <h3 style={{ margin: 0, fontSize: '1rem', color: '#555' }}>방문자 추이</h3>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              
+              <div style={{ display: 'flex', gap: '0.5rem', marginRight: '1rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.85rem', cursor: 'pointer', color: '#555' }}>
+                  <input type="checkbox" checked={showVisitors} onChange={(e) => setShowVisitors(e.target.checked)} style={{ marginRight: '4px' }} />
+                  방문자
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', fontSize: '0.85rem', cursor: 'pointer', color: '#555' }}>
+                  <input type="checkbox" checked={showUsers} onChange={(e) => setShowUsers(e.target.checked)} style={{ marginRight: '4px' }} />
+                  가입자
+                </label>
+              </div>
+
               {period === 'specific' && (
                 <input 
                   type="date" 
@@ -184,6 +228,7 @@ export default function AdminModal({ onClose }) {
               >
                 <option value="specific">특정 날짜 (24시간)</option>
                 <option value="week">최근 7일</option>
+                <option value="month">최근 30일</option>
                 <option value="all">전체 누적</option>
               </select>
             </div>
@@ -194,19 +239,27 @@ export default function AdminModal({ onClose }) {
               그래프 데이터를 불러오는 중입니다...
             </div>
           ) : (
-            <div style={{ flex: 1, width: '100%' }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+            <div style={{ width: '100%', height: '250px' }}>
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={chartData} margin={{ top: 10, right: showUsers ? -20 : 10, left: showVisitors ? -20 : 10, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
                   <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#888' }} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#888' }} allowDecimals={false} />
+                  
+                  {showVisitors && (
+                    <YAxis yAxisId="left" orientation="left" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#888' }} allowDecimals={false} />
+                  )}
+                  {showUsers && (
+                    <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#888' }} allowDecimals={false} />
+                  )}
+
                   <Tooltip 
                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                     itemStyle={{ fontWeight: 'bold' }}
                   />
                   <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '12px' }} />
-                  <Line type="monotone" name="방문자 수" dataKey="방문자" stroke="#ff6b6b" strokeWidth={3} dot={{ r: 3, strokeWidth: 2 }} activeDot={{ r: 5 }} />
-                  <Line type="monotone" name="가입자 수" dataKey="가입자" stroke="#339af0" strokeWidth={3} dot={{ r: 3, strokeWidth: 2 }} activeDot={{ r: 5 }} />
+                  
+                  {showVisitors && <Line yAxisId="left" type="monotone" name="방문자 수" dataKey="방문자" stroke="#ff6b6b" strokeWidth={3} dot={{ r: 3, strokeWidth: 2 }} activeDot={{ r: 5 }} />}
+                  {showUsers && <Line yAxisId="right" type="monotone" name="가입자 수" dataKey="가입자" stroke="#339af0" strokeWidth={3} dot={{ r: 3, strokeWidth: 2 }} activeDot={{ r: 5 }} />}
                 </LineChart>
               </ResponsiveContainer>
             </div>

@@ -945,8 +945,8 @@ function App() {
       });
 
       if (minStart !== 24 && maxEnd !== 0) {
-        earliestHour = minStart;
-        latestHour = maxEnd;
+        earliestHour = Math.min(9, minStart);
+        latestHour = Math.max(15, maxEnd);
       }
     }
 
